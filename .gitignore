@@ -49,3 +49,4 @@ po/*~
 rsconnect/
 .DS_Store
 /embl_ebi_rna-seq_files
+/scripts/embl_ebi_rna-seq_files
