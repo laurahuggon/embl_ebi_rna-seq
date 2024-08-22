@@ -8,9 +8,7 @@ This data used here is from ([Yu et al., 2023](https://www.sciencedirect.com/sci
 
 The study performed transcriptomic profiling of brain, lung and liver endothelial cells (ECs) from adult mice (2-4 months).
 
-## RNA-seq
-
-Load the libraries required.
+## Load libraries
 
 ```{r, results="hide", message=FALSE}
 library(dplyr)
@@ -35,9 +33,11 @@ library(memes)
 library(TFBSTools)
 library(JASPAR2024)
 library(universalmotif)
+library(vsn)
+library(ComplexHeatmap)
 ```
 
-### Load the RNA-seq data
+## Load RNA-seq data
 
 Load the data frame that contains the mappings from transcript IDs to gene IDs and gene names.
 
@@ -89,7 +89,7 @@ names(txi) # txi is a list containing matricies of abundance, counts, lengths an
 
 The `txi` object contains several components:
 
--   **Abundance**: contains transcript abundance estimates, typically expressed as TPM (Transcripts per Million) or FPKM/RPKM (Fragments/Kilobases per Million reads). TPM and FPKM/RPKM are normalised measures that account for both transcript level and sequencing depth, making them useful for comparing expression levels across samples.
+-   **Abundance**: contains transcript abundance estimates, typically expressed as TPM (Transcripts per Million) or FPKM/RPKM (Fragments/Kilobases per Million reads). TPM and FPKM/RPKM are normalised measures that account for both transcript length and library size, making them useful for comparing expression levels across samples.
 
 -   **Counts**: represents the raw number of reads or fragments that have been assigned to each gene.
 
@@ -129,7 +129,90 @@ rownames(data) = samples
 knitr::kable(data)
 ```
 
-### Differential Expression Analysis (DEA)
+## Data exploration
+
+### Remove unexpressed genes
+
+Not all mouse genes in the genome will be expressed in these samples. Here, we will use a minimal threshold that if a gene does not have more than 5 counts total across all samples, it is filtered out (as it is not enough data to be able to do anything with).
+
+Count the number of rows (genes) in `txi` before filtering.
+
+```{r}
+nrow(txi$counts) # 45,706 genes
+```
+
+Removes genes with total counts less than or equal to 5 across all samples.
+
+```{r}
+# Extract counts matrix
+counts_matrix = txi$counts
+
+# Calculate total counts for each gene (i.e. sum across columns)
+total_count = rowSums(counts_matrix)
+
+# Filter genes
+# Returns a logical vector (TRUE and FALSE) values
+filtered_genes = total_count > 5
+
+# Update txi to include only the filtered genes
+# If an element is filtered genes is TRUE, the row is kept
+txi$abundance = txi$abundance[filtered_genes, ]
+txi$counts = txi$counts[filtered_genes, ]
+txi$length = txi$length[filtered_genes, ]
+```
+
+Count the number of rows (genes) after filtering.
+
+```{r}
+nrow(txi$counts) # 20,383 genes
+```
+
+### Library size differences
+
+Extract the raw counts matrix from `txi`.
+
+```{r}
+counts_matrix = txi$counts
+
+# Assign sample names as column names
+colnames(counts_matrix) = rownames(data)
+
+knitr::kable(head(counts_matrix))
+```
+
+Differences in the total number of reads assigned to genes between samples typically occur for technical reasons. In practice, it means that we can not simply compare a gene’s raw read count directly between samples and conclude that a sample with a higher read count also expresses the gene more strongly - the higher count may be caused by an overall higher number of reads in that sample.
+
+Compare the library sizes of all samples.
+
+```{r}
+# Calculate library sizes (total counts per sample) by summing the counts for each column
+libSize <- colSums(counts_matrix)
+
+# Create a data frame for plotting
+plot_data = data.frame(
+  sample = names(libSize),
+  libSize = libSize
+)
+
+# Merge with group information
+plot_data = cbind(plot_data, data)
+
+# Remove row names
+rownames(plot_data) = NULL
+
+plot_data
+```
+
+```{r}
+# Plot library sizes
+ggplot(plot_data, aes(x = sample, y = libSize / 1e6, fill = condition)) + 
+  geom_bar(stat = "identity") + 
+  labs(x = "Sample", y = "Total count in millions") + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+```
+
+## Differential Expression Analysis (DEA)
 
 Use the `DESeq2` library to perform differential gene expression analysis and normalise counts for making plots such as PCA, heatmaps, etc.
 
@@ -145,7 +228,7 @@ dds = DESeqDataSetFromTximport(txi, colData=data, design=~condition)
 ```
 
 ```{r}
-dds # dds contains 45,706 genes and 9 samples
+dds # dds contains 20,383 genes and 9 samples
 ```
 
 `dds` contains:
@@ -199,31 +282,45 @@ After running this function, the `dds` object contains additional information su
 
 -   **Test results**: p-values and log2 fold changes indicating differential expression.
 
+## Transformation
+
+Most downstream analyses work best in situations where the variance of the input data (here, each gene) is relatively independent of the average value. For read count data such as RNA-seq, this is not the case. In fact, the variance increases with the average read count.
+
+Generate a plot to show how the standard deviation of genes varies with their mean (across all samples)
+
+```{r}
+meanSdPlot(assay(dds), ranks = FALSE)
+```
+
 Perform a variance stabilising transformation (VST) on the normalised counts.
 
 VST aims to stabilise variance across the range of mean values. This is important as RNA-seq data typically exhibit a mean-variance relationship, which is where expression level of the gene affects the variability of that gene.
+
+Generate the plot to verify that it has removed the correlation between average read count and variance.
 
 ```{r}
 # The resultant vsd object contains variance-stabilised normalised counts (this is a log2-like scale but with variance stabilised across the range of counts)
 vsd = vst(dds, blind=TRUE) # Do not take into account the experimental design
 
-# Convert to a matrix to view
-vsd_matrix = assay(vsd)
-knitr::kable(head(vsd_matrix))
+# Generate plot
+meanSdPlot(assay(vsd), ranks = FALSE)
 ```
 
 Apply log2(n + 1) transformation to the normalised counts using `normTransform()`.
 
 log2(n + 1) transformation helps to make the data more interpretable, especially when dealing with count data that has a wide range of expression levels. n + 1 handles zero values before performing the log transformation.
 
+Generate same plot to verify that it has removed the correlation between average read count and variance.
+
 ```{r}
 # The resultant ntd object contains log2-transformed normalised counts
 ntd = normTransform(dds)
 
-# Convert to a matrix to view
-ntd_matrix = assay(ntd)
-knitr::kable(head(ntd_matrix))
+# Generate plot
+meanSdPlot(assay(ntd), ranks = FALSE)
 ```
+
+## PCA
 
 Perform PCA on the variance-stabilised data (`vsd`) and generate a PCA plot using `PlotPCA()`.
 
@@ -283,7 +380,7 @@ ggplot(pcaData, aes(PC1, PC2, color=condition)) +
 
 PC1 and PC2 account for 96% of the total variance in the dataset - these two components capture a substantial portion of the data's variability. This indicates that the reduced 2D representation is capturing most of the essential information, making it easier to visualise meaningful patterns/clusters/relationships.
 
-### Quality control
+## Quality control
 
 These samples were collected directly after FACs sorting so these cells might be stressed.
 
@@ -315,6 +412,25 @@ knitr::kable(head(top300))
 
 Perform GO enrichment analysis to identify GO terms that are overrepresented among the top 300 genes.
 
+`gost()`, of the [gprofiler2 package](https://cran.r-project.org/web/packages/gprofiler2/gprofiler2.pdf), performs functional enrichment analysis (FEA) on gene lists. FEA is a method to identify classes of genes that are over-represented in a large set of genes. Several data sources are used:
+
+-   **Gene Ontology (GO)**
+
+    -   **GO:MF**: functional roles at the molecular level e.g. "enzyme activity".
+
+    -   **GO:CC**: subcellular localisation where gene product functions e.g. "nucleus".
+
+    -   **GO:BP**: broader biological processes and pathways e.g. "cell division".
+
+```{=html}
+<!-- -->
+```
+-   **Pathway and Functional databases**
+
+    -   **KEGG**: biological pathways and interactions between different biological molecules.
+
+    -   **REACTOME**: biological pathways and processes.
+
 ```{r}
 # Perform GO enrichment analysis using the gene identifiers provided in the row name
 go_enrich = gost(rownames(top300), organism = "mmusculus",ordered_query = TRUE) # Specify the organism is a mouse and that the gene list is provided in a specific order
@@ -326,7 +442,7 @@ Modify the `go_enrich` data frame to only include relevant columns:
 
 -   `query`: query name/identifier. A query is the set of genes you are interested in investigating.
 
--   `source`: source of the Go term (e.g. GO, KEGG).
+-   `source`: source of the GO term (e.g. GO, KEGG).
 
 -   `term_id`: ID of the GO term.
 
@@ -380,30 +496,39 @@ knitr::kable(head(gp_mod))
 
 The `result` data frame, which contains the enrichment analysis, is ordered first by query name, data source (such as GO:BP, GO:CC, etc.), and then by the adjusted p-value.
 
+Filter for the GO:BP data source (to look for biological processes related to stress responses).
+
+```{r}
+gp_mod_bp = gp_mod %>%
+  filter(Category == "GO:BP")
+
+knitr::kable(head(gp_mod_bp))
+```
+
 Create an `enrichResult` object from the modified data frame. This class is used by the `enrichplot` package to generate plots.
 
 ```{r}
 # Define as enrichResult object
-gp_mod_enrich  = new("enrichResult", result = gp_mod)
+gp_mod_bp_enrich  = new("enrichResult", result = gp_mod_bp)
 # Generate a dotplot
-enrichplot::dotplot(gp_mod_enrich)
+# The order of the y-axis is determined by the orderBy= argument
+    # Default for orderBy="x" (in this case, "GeneRatio")
+enrichplot::dotplot(gp_mod_bp_enrich, title="Gene Ontology:Biological Process")
 ```
+
+This plot shows the 10 most enriched GO terms (ordered by `GeneRatio`) in genes with the highest expression levels across all the samples.
 
 The GO terms largely relate to normal developmental processes and anatomical structure formation.
 
 Anatomical structure morphogenesis, vasculature development, and blood vessel development are related to normal EC function.
 
-Changes in mitochondrial components can indicate stress, as mitochondrial dysfunction often correlate with cellular stress responses.
-
-### Differentially expressed genes between conditions
-
-Look for genes enriched in brain ECs compared to lung or liver.
+## Explorting the outputs of DEA
 
 ```{r}
 # Extract the results of the DEA from dds
 res = results(dds)
 
-knitr::kable(head(res))
+head(res)
 ```
 
 The default output columns are:
@@ -428,7 +553,83 @@ List the names of the coefficients (i.e. terms in the design formula) that are a
 resultsNames(dds)
 ```
 
-We want genes that are overexpressed in the brain compared to both lung and liver. Here, this will be represented by genes that have a negative `log2FoldChange` in the comparisons named above.
+### Log-fold shrinkage
+
+Shrinking log2 fold changes is used to reduce noise in low-count genes.
+
+-   Genes with low counts often show exaggerated or highly variable log2 fold changes (i.e. 1 vs 4 counts is a 4x fold change).
+
+-   Shrinking the log2fold changes helps reduce this noise by pulling extreme values towards more conservative or "shrunk" estimates, reflecting more accurate differences in gene expression.
+
+Extract the results of the DEA for lung compared to brain.
+
+```{r}
+resLGBR = results(dds, contrast = c("condition", "LG", "BR"))
+
+head(resLGBR)
+```
+
+Visualise the relationship between log2 fold changes, significant DE genes, and the gene mean count.
+
+```{r}
+plotMA(resLGBR)
+```
+
+We can see that genes with low counts tend to have exaggerated fold changes and high levels of variance. However, since these counts are very low, this is probably noise.
+
+Shrinking the log2 fold changes will "shrink" the fold changes of genes with low counts (i.e. genes towards the left of the x-axis).
+
+```{r}
+resLGBR_Lfc = lfcShrink(dds, coef = "condition_LG_vs_BR", res = resLGBR)
+
+plotMA(resLGBR_Lfc)
+```
+
+### Visualising differentially expressed genes between conditions
+
+#### Heatmap
+
+A heatmap can reveal expression patterns across sample groups (columns) and automatically ordered genes (rows) according to their similarity.
+
+Use the transformed data.
+
+```{r, fig.width=10, fig.height=10}
+# Get top 50 differentially expressed genes from res
+genes = res[order(res$padj), ] |>
+  head(50) |>
+  rownames()
+
+# Extract data for heatmap
+heatmapdata = assay(vsd)[genes, ]
+
+# Create a gene ID to gene name mapping
+id_to_name = setNames(tx2gene$V3, tx2gene$V2)
+# Replace gene IDs with gene names
+rownames(heatmapdata) = id_to_name[rownames(heatmapdata)]
+
+# Scale transformed counts for visualisation
+# Scale each row of the matrix so that each row has a mean of 0 and a standard deviation of 1
+# This helps to ensure that the data is centered and scaled for each gene, making it easier to visualise patterns in the heatmap
+heatmapdata = t(scale(t(heatmapdata)))
+
+# Extract condition data
+heatmapColAnnot = data.frame(colData(vsd)[, "condition"])
+# Rename column title
+names(heatmapColAnnot) = "Condition"
+# Create annotation object for use in the heatmap
+heatmapColAnnot = HeatmapAnnotation(df = heatmapColAnnot)
+
+# Plot heatmap
+ComplexHeatmap::Heatmap(heatmapdata,
+                        top_annotation = heatmapColAnnot,
+                        name = "Expression",
+                        cluster_rows = TRUE, cluster_columns = FALSE,
+                        row_names_gp = grid::gpar(fontsize=10)) 
+```
+
+#### Volcano plot
+
+We want to look for genes that are overexpressed in the brain compared to both lung and liver. Here, this will be represented by genes that have a negative `log2FoldChange` in the comparisons named above.
 
 What kind of threshold should we use for `log2FoldChange` and `padj`? Use a volcano plot to help decide.
 
@@ -484,14 +685,14 @@ PlotVolcano <-function(comparison){
     nrow()
   
   # Assign DE labels to genes
-  # Create "diffexpressed" column and label all genes as "Unchanged" with total count of unchanged genes
-  de$diffexpressed <- paste0("Unchanged (",n_unchanged,")")
+  # Create "Expression" column and label all genes as "Unchanged" with total count of unchanged genes
+  de$Expression <- paste0("Unchanged (",n_unchanged,")")
   # For genes where log2FoldChange is greater than foldchange and significant, the label is updated to "Up" with a total count of upregulated genes
-  de$diffexpressed[de$log2FoldChange >= foldchange & de$padj < pval] <- paste0("Up (",n_up,")")
+  de$Expression[de$log2FoldChange >= foldchange & de$padj < pval] <- paste0("Up (",n_up,")")
   # For genes where log2FoldChange is less than -foldchange and significant, the label is updated to "Down" with a total count of downregulated genes
-  de$diffexpressed[de$log2FoldChange <= -(foldchange) & de$padj < pval] <- paste0("Down (",n_down,")")
+  de$Expression[de$log2FoldChange <= -(foldchange) & de$padj < pval] <- paste0("Down (",n_down,")")
   
-  # Set colours for plot - the order of colours will correspond to the order of levels in the factor variable de$diffexpressed
+  # Set colours for plot - the order of colours will correspond to the order of levels in the factor variable de$Expression
   if (n_up == 0 & n_down == 0){ # If there are no up or downregulated genes
       cvec = c("#84A1AB") # Use grey-blue for all genes
   } else if (n_up == 0){ # If there are only downregulated genes
@@ -505,9 +706,9 @@ PlotVolcano <-function(comparison){
   # Add gene names to genes that are differentially expressed
   # Create "delabel" column and initialise with NA values for all rows (by default, no genes are labelled on the plot)
   de$delabel <- NA
-  # Select "delabel" entries where "diffexpressed" does not contain "Unchanged"
-  # Select and assign gene names (from "V3") where "diffexpressed" does not contain "Unchanged"
-  de$delabel[!grepl("Unchanged", de$diffexpressed)] <- de$V3[!grepl("Unchanged", de$diffexpressed)]
+  # Select "delabel" entries where "Expression" does not contain "Unchanged"
+  # Select and assign gene names (from "V3") where "Expression" does not contain "Unchanged"
+  de$delabel[!grepl("Unchanged", de$Expression)] <- de$V3[!grepl("Unchanged", de$Expression)]
   # Sort the data frame by adjusted p-values
   de=de[order(de$padj),]
   
@@ -520,8 +721,8 @@ PlotVolcano <-function(comparison){
           geom_vline(xintercept=c(-(foldchange), foldchange), col="light grey", linetype="dashed") +
           # Add horizontal dashed line at the pval threshold
           geom_hline(yintercept=-log10(pval), col="light grey", linetype="dashed") +
-          # Add points to the plot, coloured by "diffexpressed" column
-          geom_point(aes(color=diffexpressed), alpha=0.5) +
+          # Add points to the plot, coloured by "Expression" column
+          geom_point(aes(color=Expression), alpha=0.5) +
           # Add text lables (avoiding overlap) to the top 50 most signficant DE genes
           # Set x- and y-coordinates for labels using "log2FoldChange" and "padj" columns
           geom_text_repel(data=de[1:50,],aes(x = log2FoldChange, y = -log10(padj),label=delabel),max.overlaps=50,size=3) +
@@ -541,9 +742,11 @@ PlotVolcano("condition_LG_vs_BR")
 PlotVolcano("condition_LV_vs_BR")
 ```
 
+#### GO enrichment analysis
+
 Look at genes overexpressed in the brain compared to both lung and liver.
 
-Identify genes that are significantly downregulated in lung samples compared to brain samples.
+Identify genes that are significantly downregulated (negative fold change) in lung samples compared to brain samples.
 
 ```{r, message=FALSE}
 # Shrink the log2 fold changes using the apeglm method to stabilise the estimates,       especially for genes with low counts
@@ -558,13 +761,7 @@ brainlung = lfcShrink(dds, coef="condition_LG_vs_BR", type="apeglm") %>%
 head(brainlung) # The output is a vector of gene IDs
 ```
 
-Shrinking log2 fold changes is used to reduce noise in low-count genes.
-
--   Genes with low counts often show exaggerated or highly variable log2 fold changes.
-
--   Shrinking the log2fold changes helps reduce this noise by pulling extreme values towards more conservative or "shrunk" estimates, reflecting more accurate differences in gene expression.
-
-Identify genes that are significantly downregulated in liver samples compared to brain samples.
+Identify genes that are significantly downregulated (negative fold change) in liver samples compared to brain samples.
 
 ```{r, message=FALSE}
 # Shrink the log2 fold changes using the apeglm method to stabilise the estimates,       especially for genes with low counts
@@ -580,11 +777,11 @@ head(brainliver) # The output is a vector of gene IDs
 ```
 
 ```{r}
-length(brainlung) # 388 genes are downregulated in LG compared to BR
+length(brainlung) # 378 genes are downregulated in LG compared to BR
 ```
 
 ```{r}
-length(brainliver) # 743 genes are downregulated in LV compared to BR
+length(brainliver) # 731 genes are downregulated in LV compared to BR
 ```
 
 Get the genes that are downregulated in both the lung and liver compared to the brain.
@@ -595,20 +792,7 @@ brain_enriched = intersect(brainlung,brainliver) %>%
 # Remove duplicates
   unique()
 
-length(brain_enriched) # 229 genes are downregulated in LG and LV compared to the brain
-```
-
-As a control set for later, identify liver enriched genes.
-
-```{r, message=FALSE}
-liver_enriched = lfcShrink(dds, coef="condition_LV_vs_BR", type="apeglm") %>%
-  as.data.frame() %>%
-  filter(padj<0.001 & log2FoldChange >= 2) %>%
-  rownames() %>% unique
-```
-
-```{r}
-length(liver_enriched) # 788 genes are upregulated in LV compared to brain
+length(brain_enriched) # 221 genes are downregulated in LG and LV compared to the brain
 ```
 
 Perform GO analysis to see what kind of gene networks they belong to.
@@ -641,17 +825,21 @@ names(gp_mod) = c("Cluster", "Category", "ID", "Description", "p.adjust",
 # Set row names to the GO term IDs
 row.names(gp_mod) = gp_mod$ID
 
-# Define as enrichResult object
-gp_mod_enrich  = new("enrichResult", result = gp_mod)
+# Filter
+gp_mod_bp = gp_mod %>%
+  filter(Category == "GO:BP")
 
-knitr::kable(head(gp_mod))
+# Define as enrichResult object
+gp_mod_bp_enrich  = new("enrichResult", result = gp_mod_bp)
+
+knitr::kable(head(gp_mod_bp))
 ```
 
-Generate a bar plot to visualise the result of the GO enrichment analysis, showing the top 25 enriched GO terms.
+Generate a bar plot to visualise the result of the GO enrichment analysis, showing the top 10 enriched GO terms.
 
-```{r, fig.width=10, fig.height=10}
-barplot(gp_mod_enrich, showCategory = 25, font.size = 12) + 
+```{r, fig.width=10, fig.height=6}
+barplot(gp_mod_bp_enrich, showCategory = 10, font.size = 12, title="Gene Ontology:Biological Process") + 
   ggplot2::facet_grid(~Cluster)
 ```
 
-This plot provides a visual summary of the 25 most enriched GO terms.
+This plot shows the 10 most enriched GO terms (ordered by `p.adjust`) in genes overexpressed in the brain compared to lung and liver.
