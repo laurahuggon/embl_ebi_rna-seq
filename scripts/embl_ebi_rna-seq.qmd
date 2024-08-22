@@ -422,9 +422,8 @@ Perform GO enrichment analysis to identify GO terms that are overrepresented amo
 
     -   **GO:BP**: broader biological processes and pathways e.g. "cell division".
 
-```{=html}
 <!-- -->
-```
+
 -   **Pathway and Functional databases**
 
     -   **KEGG**: biological pathways and interactions between different biological molecules.
