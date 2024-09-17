@@ -35,6 +35,7 @@ library(JASPAR2024)
 library(universalmotif)
 library(vsn)
 library(ComplexHeatmap)
+library(reshape2)
 ```
 
 ## Load RNA-seq data
@@ -133,42 +134,6 @@ knitr::kable(data)
 
 ### Remove unexpressed genes
 
-Not all mouse genes in the genome will be expressed in these samples. Here, we will use a minimal threshold that if a gene does not have more than 5 counts total across all samples, it is filtered out (as it is not enough data to be able to do anything with).
-
-Count the number of rows (genes) in `txi` before filtering.
-
-```{r}
-nrow(txi$counts) # 45,706 genes
-```
-
-Removes genes with total counts less than or equal to 5 across all samples.
-
-```{r}
-# Extract counts matrix
-counts_matrix = txi$counts
-
-# Calculate total counts for each gene (i.e. sum across columns)
-total_count = rowSums(counts_matrix)
-
-# Filter genes
-# Returns a logical vector (TRUE and FALSE) values
-filtered_genes = total_count > 5
-
-# Update txi to include only the filtered genes
-# If an element is filtered genes is TRUE, the row is kept
-txi$abundance = txi$abundance[filtered_genes, ]
-txi$counts = txi$counts[filtered_genes, ]
-txi$length = txi$length[filtered_genes, ]
-```
-
-Count the number of rows (genes) after filtering.
-
-```{r}
-nrow(txi$counts) # 20,383 genes
-```
-
-### Library size differences
-
 Extract the raw counts matrix from `txi`.
 
 ```{r}
@@ -180,7 +145,122 @@ colnames(counts_matrix) = rownames(data)
 knitr::kable(head(counts_matrix))
 ```
 
-Differences in the total number of reads assigned to genes between samples typically occur for technical reasons. In practice, it means that we can not simply compare a gene’s raw read count directly between samples and conclude that a sample with a higher read count also expresses the gene more strongly - the higher count may be caused by an overall higher number of reads in that sample.
+Genes with low expression levels across all samples should be filtered out (e.g. not all mouse genes in the genome will be expressed in these samples). This removes noise from the data, making results more reliable and improves statistical power.
+
+Determine the optimal filtering criteria.
+
+Use Counts Per Million (CPM) to normalise for raw count variability (by expressing counts relative to the total number of reads in the sample). This is calculated by:
+
+$$\text{CPM} = \left(\frac{\text{Raw Count}}{\text{Total Reads for Sample}}\right) \times 1{,}000{,}000$$
+
+```{r}
+# Define the function to plot the number of genes retained based on CPM thresholds
+# The min_samples parameter is used to define the minimum number of samples with CPM above min_cpm to keep a gene to be considered retained
+plot_genes_retained_by_cpm <- function(data, min_samples=2) {
+  
+  # Convert raw counts to CPM (Counts Per Million)
+  # 2 indicates that the operation should be performed across columns
+  # colSums(data) calculates the sums of counts for each sample (i.e. sum for each column)
+  # Therefore, for each column in the data matrix, divide each entry by the total sum of that column
+  cpm <- sweep(data, 2, colSums(data), FUN = "/") * 1e6
+  
+  # Define a range of CPM thresholds to test (from 0 to 5 with increments of 0.1)
+  thresholds <- seq(0, 5, by = 0.1)
+  
+  # Initialise a vector to store the number of genes retained for each threshold
+  # Creates an empty numeric vector with the same length as thresholds
+  genes_retained <- numeric(length(thresholds))
+  
+  # Loop through each threshold value and calculate the number of genes retained
+  for (i in seq_along(thresholds)) { # Generates a sequence of indices from 1 to the length of thresholds
+    min_cpm <- thresholds[i] # Set min_cpm to the current threshold value being processed
+    
+    # cpm > min_cpm creates a logical matrix where each element is TRUE if the CPM for that gene in that sample is greater than the current threshold (min_cpm)
+    # rowSums(cpm > min_cpm) calculates the number of samples for which each gene has a CPM greater than min_cpm - this creates a vector where each element represents the number of samples meeting the threshold for each gene
+    # Then create logical vector (mask) where each element is TRUE if the rowSums() element is greater than or equal to the min_samples requirement
+    mask <- rowSums(cpm > min_cpm) >= min_samples
+    
+    # Count the number of TRUE values in the mask vector, which corresponds to the number of genes retained for the current threshold
+    # This count is stored at the index corresponding to the current threshold
+    genes_retained[i] <- sum(mask)
+  }
+  
+  # Create data frame used for plotting
+  plot_data <- data.frame(thresholds = thresholds, genes_retained = genes_retained)
+  
+  # Plot the number of genes retained as a function of CPM threshold using ggplot2
+  ggplot(plot_data, aes(x = thresholds, y = genes_retained)) +
+    geom_line(color = "darkgreen") +  # Line plot for the gene counts
+    geom_point(color = "darkgreen") +  # Add points to the plot
+    geom_vline(xintercept = 1, color = "red", linetype = "dashed", label = "CPM = 1") +  # Vertical line at CPM = 1
+    labs(x = "Threshold (CPM)", y = "Number of Genes Retained") +
+    theme_minimal()
+}
+
+
+plot_genes_retained_by_cpm(counts_matrix)
+```
+
+This plot displays the number of genes retained as a function of different CPM thresholds. For many bulk RNA-seq datasets, a CPM threshold of 1 is a common filtering point.
+
+Count the number of rows (genes) in `txi` before filtering.
+
+```{r}
+nrow(txi$counts) # 45,706 genes
+```
+
+Here, we will filter genes with an expression threshold of \>0.75 CPM in at least two samples.
+
+```{r}
+filter_genes_by_cpm <- function(data, min_cpm = 0.75, min_samples = 2) {
+    # min_cpm: min counts per million (CPM) threshold for filtering genes.
+    # min_sample: min number of samples with CPM above min_cpm to keep a gene.
+  
+  # Convert raw counts to CPM (Counts Per Million)
+  cpm <- sweep(data, 2, colSums(data), FUN = "/") * 1e6  # Divide by total counts and multiply by 1M to get CPM
+  
+  # Filter genes based on CPM threshold
+  # Create a logical mask where CPM > min_cpm in at least min_samples samples
+  mask <- rowSums(cpm > min_cpm) >= min_samples
+  
+  # Apply the filter to retain only genes that pass the mask
+  # Only keep the rows (genes) where the mask is TRUE
+  filtered_data <- data[mask, ]
+  
+  return(filtered_data)
+}
+
+# Apply the filtering to the counts matrix in txi
+# filtered_genes contains only the genes that pass the filter
+filtered_genes <- filter_genes_by_cpm(txi$counts)
+
+# Update txi to include only the filtered genes
+# The matrices are filtered to only keep the rows (genes) that are present in filtered_genes
+txi$abundance <- txi$abundance[rownames(filtered_genes), ]
+txi$counts <- txi$counts[rownames(filtered_genes), ]
+txi$length <- txi$length[rownames(filtered_genes), ]
+```
+
+Count the number of rows (genes) after filtering.
+
+```{r}
+nrow(txi$counts) # 16,230 genes
+```
+
+### Library size differences
+
+Differences in the total number of reads (that have been assigned to genes) between samples typically occur for technical reasons. In practice, it means that we can not simply compare a gene’s raw read count directly between samples and conclude that a sample with a higher read count also expresses the gene more strongly - the higher count may be caused by an overall higher number of reads in that sample.
+
+Update the counts matrix from `txi`.
+
+```{r}
+counts_matrix = txi$counts
+
+# Assign sample names as column names
+colnames(counts_matrix) = rownames(data)
+
+knitr::kable(head(counts_matrix))
+```
 
 Compare the library sizes of all samples.
 
@@ -200,7 +280,7 @@ plot_data = cbind(plot_data, data)
 # Remove row names
 rownames(plot_data) = NULL
 
-plot_data
+knitr::kable(plot_data)
 ```
 
 ```{r}
@@ -211,6 +291,45 @@ ggplot(plot_data, aes(x = sample, y = libSize / 1e6, fill = condition)) +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
 ```
+
+This plot helps visualise the overall sequencing depth/library size across the samples. Ideally, the sequencing depth should be consistent across samples.
+
+### Variability and distribution of gene expression counts
+
+Use a box and whisker plot to assess the variability and distribution of gene expression counts across the samples.
+
+```{r}
+# Log transform the counts
+log_counts_matrix = log2(counts_matrix + 1)
+
+# Reshape the counts matrix (convert to long format)
+counts_long = melt(log_counts_matrix)
+
+# Rename columns
+colnames(counts_long) = c("Gene", "Sample", "Count")
+
+# Create condition data frame
+# Extract sample names (which were previously set as row names)
+condition = data.frame(Sample=rownames(data), condition=data$condition)
+
+# Merge with condition information
+counts_long <- merge(counts_long, condition, by="Sample")
+
+knitr::kable(head(counts_long))
+```
+
+```{r}
+# Plot box and whisker
+ggplot(counts_long, aes(x = Sample, y = Count, fill = condition)) +
+  geom_boxplot(outlier.shape = NA) +  # Avoid showing outliers
+  labs(x = "Sample", y = "Log2(Counts + 1)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+```
+
+This plot shows the log2 transformed gene expression counts per sample. The boxes represent the interquartile range (middle 50% of the data) and the whiskers represent variability outside the upper and lower quartiles.
+
+Ideally, the boxes and whiskers should be of similar sizes across the samples, indicating a consistent data distribution. By comparing the boxes across samples, you can see if certain samples have higher or lower expression levels overall. If the median varies significantly between samples, this suggests some samples have more overall expression than others. If the spread/height of the boxes (IQR) differs between samples, this suggests these samples have greater variability in gene expression.
 
 ## Differential Expression Analysis (DEA)
 
@@ -228,7 +347,7 @@ dds = DESeqDataSetFromTximport(txi, colData=data, design=~condition)
 ```
 
 ```{r}
-dds # dds contains 20,383 genes and 9 samples
+dds # dds contains 16,230 genes and 9 samples
 ```
 
 `dds` contains:
@@ -776,11 +895,11 @@ head(brainliver) # The output is a vector of gene IDs
 ```
 
 ```{r}
-length(brainlung) # 378 genes are downregulated in LG compared to BR
+length(brainlung) # 366 genes are downregulated in LG compared to BR
 ```
 
 ```{r}
-length(brainliver) # 731 genes are downregulated in LV compared to BR
+length(brainliver) # 686 genes are downregulated in LV compared to BR
 ```
 
 Get the genes that are downregulated in both the lung and liver compared to the brain.
@@ -791,7 +910,7 @@ brain_enriched = intersect(brainlung,brainliver) %>%
 # Remove duplicates
   unique()
 
-length(brain_enriched) # 221 genes are downregulated in LG and LV compared to the brain
+length(brain_enriched) # 209 genes are downregulated in LG and LV compared to the brain
 ```
 
 Perform GO analysis to see what kind of gene networks they belong to.
