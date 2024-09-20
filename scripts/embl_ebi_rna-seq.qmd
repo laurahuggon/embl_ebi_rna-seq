@@ -36,6 +36,7 @@ library(universalmotif)
 library(vsn)
 library(ComplexHeatmap)
 library(reshape2)
+library(grid)
 ```
 
 ## Load RNA-seq data
@@ -322,7 +323,7 @@ knitr::kable(head(counts_long))
 # Plot box and whisker
 ggplot(counts_long, aes(x = Sample, y = Count, fill = condition)) +
   geom_boxplot(outlier.shape = NA) +  # Avoid showing outliers
-  labs(x = "Sample", y = "Log2(Counts + 1)") +
+  labs(x = "Sample", y = "log2(counts + 1)") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
 ```
@@ -505,7 +506,7 @@ These samples were collected directly after FACs sorting so these cells might be
 
 Look at highly expressed genes in each condition and see if these genes are enriched in stress-related GO terms.
 
-Select the top 300 genes based on average normalised counts (which contains the library size normalised counts) to identify the the genes with the highest expression levels across all the samples.
+Select the top 300 genes based on average normalised counts to identify the the genes with the highest expression levels across all the samples.
 
 ```{r}
 # counts(dds, normalized=TRUE) retrieves the normalised counts
@@ -631,7 +632,11 @@ gp_mod_bp_enrich  = new("enrichResult", result = gp_mod_bp)
 # Generate a dotplot
 # The order of the y-axis is determined by the orderBy= argument
     # Default for orderBy="x" (in this case, "GeneRatio")
-enrichplot::dotplot(gp_mod_bp_enrich, title="Gene Ontology:Biological Process")
+dotplot_top300 = enrichplot::dotplot(gp_mod_bp_enrich) +
+  ggtitle("Top 300 expressed genes", subtitle = "Gene Ontology:Biological Process") + 
+  theme(plot.title = element_text(face="bold"))
+
+dotplot_top300
 ```
 
 This plot shows the 10 most enriched GO terms (ordered by `GeneRatio`) in genes with the highest expression levels across all the samples.
@@ -742,7 +747,9 @@ ComplexHeatmap::Heatmap(heatmapdata,
                         top_annotation = heatmapColAnnot,
                         name = "Expression",
                         cluster_rows = TRUE, cluster_columns = FALSE,
-                        row_names_gp = grid::gpar(fontsize=10)) 
+                        row_names_gp = grid::gpar(fontsize=10),
+                        column_title = "Top 50 DE genes",
+                        column_title_gp = gpar(fontsize=15, fontface="bold")) 
 ```
 
 #### Volcano plot
@@ -956,8 +963,12 @@ knitr::kable(head(gp_mod_bp))
 Generate a bar plot to visualise the result of the GO enrichment analysis, showing the top 10 enriched GO terms.
 
 ```{r, fig.width=10, fig.height=6}
-barplot(gp_mod_bp_enrich, showCategory = 10, font.size = 12, title="Gene Ontology:Biological Process") + 
-  ggplot2::facet_grid(~Cluster)
+barplot_BR_OE = barplot(gp_mod_bp_enrich, showCategory = 10, font.size = 12) + 
+  ggplot2::facet_grid(~Cluster) +
+  ggtitle("Brain-enriched genes", subtitle = "Gene Ontology:Biological Process")  + 
+  theme(plot.title = element_text(face="bold"))
+
+barplot_BR_OE
 ```
 
 This plot shows the 10 most enriched GO terms (ordered by `p.adjust`) in genes overexpressed in the brain compared to lung and liver.
