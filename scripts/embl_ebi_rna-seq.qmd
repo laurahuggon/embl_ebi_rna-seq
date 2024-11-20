@@ -191,8 +191,8 @@ plot_genes_retained_by_cpm <- function(data, min_samples=2) {
   
   # Plot the number of genes retained as a function of CPM threshold using ggplot2
   ggplot(plot_data, aes(x = thresholds, y = genes_retained)) +
-    geom_line(color = "darkgreen") +  # Line plot for the gene counts
-    geom_point(color = "darkgreen") +  # Add points to the plot
+    geom_line(color = "chartreuse4") +  # Line plot for the gene counts
+    geom_point(color = "chartreuse4") +  # Add points to the plot
     geom_vline(xintercept = 1, color = "red", linetype = "dashed", label = "CPM = 1") +  # Vertical line at CPM = 1
     labs(x = "Threshold (CPM)", y = "Number of Genes Retained") +
     theme_minimal()
@@ -288,9 +288,10 @@ knitr::kable(plot_data)
 # Plot library sizes
 ggplot(plot_data, aes(x = sample, y = libSize / 1e6, fill = condition)) + 
   geom_bar(stat = "identity") + 
-  labs(x = "Sample", y = "Total count in millions") + 
+  labs(x = "", y = "Total count in millions", title="Sequencing depth per sample") + 
   theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        plot.title = element_text(face = "bold"))
 ```
 
 This plot helps visualise the overall sequencing depth/library size across the samples. Ideally, the sequencing depth should be consistent across samples.
@@ -323,9 +324,10 @@ knitr::kable(head(counts_long))
 # Plot box and whisker
 ggplot(counts_long, aes(x = Sample, y = Count, fill = condition)) +
   geom_boxplot(outlier.shape = NA) +  # Avoid showing outliers
-  labs(x = "Sample", y = "log2(counts + 1)") +
+  labs(x = "", y = "log2(counts + 1)", title="Gene expression counts per sample") +
   theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        plot.title = element_text(face = "bold"))
 ```
 
 This plot shows the log2 transformed gene expression counts per sample. The boxes represent the interquartile range (middle 50% of the data) and the whiskers represent variability outside the upper and lower quartiles.
